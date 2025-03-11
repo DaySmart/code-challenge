@@ -8,7 +8,8 @@
     "dev": "nodemon -x ts-node src/index.ts",
     "build": "tsc",
     "test": "jest",
-    "test:watch": "jest --watch"
+    "test:watch": "jest --watch",
+    "populate-example-data": "ts-node scripts/populate-example-data.ts"
   },
   "dependencies": {
     "express": "^4.18.2",
