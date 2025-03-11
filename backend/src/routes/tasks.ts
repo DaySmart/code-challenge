@@ -1,5 +1,6 @@
 import express from 'express';
-import db from '../db';
+import { getDb } from '../db';
+import { v4 as uuidv4 } from 'uuid';
 
 const router = express.Router();
 
@@ -16,9 +17,15 @@ interface TaskWithDependencies extends Omit<Task, 'dependencies'> {
   dependencies: string[];
 }
 
+interface CreateTaskRequest {
+  title: string;
+  description?: string;
+  dependencies?: string[];
+}
+
 // Get all tasks
 router.get('/', (req, res) => {
-  db.all<Task>(
+  getDb().all<Task>(
     `SELECT t.*, GROUP_CONCAT(td.depends_on_task_id) as dependencies
      FROM tasks t
      LEFT JOIN task_dependencies td ON t.id = td.task_id
@@ -38,34 +45,7 @@ router.get('/', (req, res) => {
   );
 });
 
-// Get specific task
-router.get('/:taskId', (req, res) => {
-  const { taskId } = req.params;
-  
-  db.get<Task>(
-    `SELECT t.*, GROUP_CONCAT(td.depends_on_task_id) as dependencies
-     FROM tasks t
-     LEFT JOIN task_dependencies td ON t.id = td.task_id
-     WHERE t.id = ?
-     GROUP BY t.id`,
-    [taskId],
-    (err, row) => {
-      if (err) {
-        return res.status(500).json({ error: err.message });
-      }
-      if (!row) {
-        return res.status(404).json({ error: 'Task not found' });
-      }
-      
-      const task = {
-        ...row,
-        dependencies: row.dependencies ? row.dependencies.split(',') : []
-      };
-      
-      res.json(task);
-    }
-  );
-});
+
 
 // Get valid task ordering
 router.get('/ordering', (req, res) => {
@@ -75,7 +55,7 @@ router.get('/ordering', (req, res) => {
   }
 
   // First, get all tasks and their dependencies
-  db.all<DependencyRow>(
+  getDb().all<DependencyRow>(
     `SELECT t.id, td.depends_on_task_id
      FROM tasks t
      LEFT JOIN task_dependencies td ON t.id = td.task_id`,
@@ -131,6 +111,117 @@ router.get('/ordering', (req, res) => {
       res.json(result);
     }
   );
+});
+
+// Get specific task
+router.get('/:taskId', (req, res) => {
+  const { taskId } = req.params;
+  
+  getDb().get<Task>(
+    `SELECT t.*, GROUP_CONCAT(td.depends_on_task_id) as dependencies
+     FROM tasks t
+     LEFT JOIN task_dependencies td ON t.id = td.task_id
+     WHERE t.id = ?
+     GROUP BY t.id`,
+    [taskId],
+    (err, row) => {
+      if (err) {
+        return res.status(500).json({ error: err.message });
+      }
+      if (!row) {
+        return res.status(404).json({ error: 'Task not found' });
+      }
+      
+      const task = {
+        ...row,
+        dependencies: row.dependencies ? row.dependencies.split(',') : []
+      };
+      
+      res.json(task);
+    }
+  );
+});
+
+// Add this new POST endpoint
+router.post('/', (req, res) => {
+  const { title, description, dependencies = [] } = req.body as CreateTaskRequest;
+  const taskId = uuidv4();
+  
+  getDb().serialize(() => {
+    getDb().run(
+      'INSERT INTO tasks (id, title, description) VALUES (?, ?, ?)',
+      [taskId, title, description],
+      (err) => {
+        if (err) {
+          return res.status(500).json({ error: err.message });
+        }
+
+        // Insert dependencies if any
+        const dependencyPromises = dependencies.map(depId => {
+          return new Promise((resolve, reject) => {
+            getDb().run(
+              'INSERT INTO task_dependencies (task_id, depends_on_task_id) VALUES (?, ?)',
+              [taskId, depId],
+              (err) => err ? reject(err) : resolve(null)
+            );
+          });
+        });
+
+        Promise.all(dependencyPromises)
+          .then(() => {
+            res.status(201).json({
+              id: taskId,
+              title,
+              description,
+              dependencies,
+              created_at: new Date().toISOString(),
+              updated_at: new Date().toISOString()
+            });
+          })
+          .catch(err => {
+            res.status(500).json({ error: err.message });
+          });
+      }
+    );
+  });
+});
+
+// Add new PUT endpoint for updating dependencies
+router.put('/:taskId/dependencies', (req, res) => {
+  const { taskId } = req.params;
+  const { dependencies = [] } = req.body;
+
+  getDb().serialize(() => {
+    // First delete existing dependencies
+    getDb().run(
+      'DELETE FROM task_dependencies WHERE task_id = ?',
+      [taskId],
+      (err) => {
+        if (err) {
+          return res.status(500).json({ error: err.message });
+        }
+
+        // Then insert new dependencies
+        const dependencyPromises = dependencies.map(depId => {
+          return new Promise((resolve, reject) => {
+            getDb().run(
+              'INSERT INTO task_dependencies (task_id, depends_on_task_id) VALUES (?, ?)',
+              [taskId, depId],
+              (err) => err ? reject(err) : resolve(null)
+            );
+          });
+        });
+
+        Promise.all(dependencyPromises)
+          .then(() => {
+            res.json({ message: 'Dependencies updated successfully' });
+          })
+          .catch(err => {
+            res.status(500).json({ error: err.message });
+          });
+      }
+    );
+  });
 });
 
 export default router; 
